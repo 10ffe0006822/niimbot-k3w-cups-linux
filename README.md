@@ -45,7 +45,10 @@ lp -d NIIMBOT_K3W test-43x25.pdf
 После изменений снова выполните `sudo ./install.sh`.
 
 ### Ограничения
-- Нет обратной связи от принтера (кончилась лента, открыта крышка и т.п.)
+- **Открытая крышка** — принтер сам ставит печать на паузу и продолжает, когда крышку закрыть.
+- **Кончилась лента** — принтер паузу не ставит: задания, отправленные без ленты,
+  считаются напечатанными и теряются. Меняйте рулон заранее и перепечатайте пропавшие этикетки.
+- Драйвер не получает от принтера обратной связи о состоянии
 - Проверено только на K3_W; другие модели NIIMBOT могут использовать иной протокол
 
 ### Как это работает
@@ -103,7 +106,10 @@ height (along the tape), shift right and shift up in mm as seen on the printed l
 The first line is the default size. Run `sudo ./install.sh` again after editing.
 
 ### Limitations
-- No printer status feedback (out of paper, cover open, etc.)
+- **Cover open** — the printer pauses by itself and resumes once the cover is closed.
+- **Out of labels** — the printer does not pause: jobs sent without labels are reported
+  as printed and are lost. Replace the roll in time and reprint any missing labels.
+- The driver gets no status feedback from the printer
 - Tested on the K3_W only; other NIIMBOT models may use a different protocol
 
 ### Protocol
