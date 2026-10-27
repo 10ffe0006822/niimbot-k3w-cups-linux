@@ -1,0 +1,195 @@
+#!/usr/bin/python3 -I
+# CUPS filter: CUPS raster -> NIIMBOT K3_W (ESC/POS "GS v 0" raster over the USB printer interface).
+#
+# Protocol, found by testing:
+#   ESC @                      init
+#   GS v 0 0 xL xH yL yH data  raster, always 80 bytes (640 dots) wide, bit 1 = black
+#   FF ESC @                   end of label; the trailing ESC @ makes the printer start printing
+# Labels are centred on the 80 mm print head; X_ADJUST_DOTS corrects the measured offset.
+import os
+import struct
+import sys
+
+HEAD_DOTS = 640
+HEAD_BYTES = HEAD_DOTS // 8
+X_ADJUST_DOTS = 8          # +1 mm: test print was shifted ~1 mm left
+DOTS_PER_MM = 8
+CS_K = 3                   # cupsColorSpace values where 1/255 means black
+CS_W, CS_SW = 0, 18        # ... and where 0 means black
+
+
+def log(msg):
+    sys.stderr.write(msg + "\n")
+    sys.stderr.flush()
+
+
+def read_exact(f, n):
+    buf = f.read(n)
+    if len(buf) != n:
+        raise EOFError
+    return buf
+
+
+def read_header(f, endian):
+    hdr = read_exact(f, 1796)
+    u = lambda off: struct.unpack_from(endian + "I", hdr, off)[0]
+    return {
+        "page_pt": (u(352), u(356)),
+        "width": u(372), "height": u(376), "bpc": u(384), "bpp": u(388),
+        "bpl": u(392), "cs": u(400), "copies": u(340) or 1,
+    }
+
+
+def read_lines(f, h, compressed):
+    """Yield h raw lines of h['bpl'] bytes each."""
+    bpl, height = h["bpl"], h["height"]
+    if not compressed:
+        for _ in range(height):
+            yield read_exact(f, bpl)
+        return
+    # CUPS raster v2 run-length compression
+    unit = max(1, h["bpp"] // 8)
+    blank = b"\xff" if h["cs"] in (CS_W, CS_SW) else b"\x00"
+    y = 0
+    while y < height:
+        repeat = read_exact(f, 1)[0] + 1
+        line = bytearray()
+        while len(line) < bpl:
+            n = read_exact(f, 1)[0]
+            if n == 128:
+                line += blank * (bpl - len(line))
+            elif n < 128:
+                line += read_exact(f, unit) * (n + 1)
+            else:
+                line += read_exact(f, (257 - n) * unit)
+        line = bytes(line[:bpl])
+        for _ in range(min(repeat, height - y)):
+            yield line
+            y += 1
+
+
+def to_bits(line, h):
+    """Convert one raster line to an int whose set bits are black dots (MSB = leftmost)."""
+    w = h["width"]
+    if h["bpp"] == 1:
+        v = int.from_bytes(line, "big") >> (len(line) * 8 - w)
+        if h["cs"] in (CS_W, CS_SW):
+            v ^= (1 << w) - 1
+        return v, w
+    if h["bpp"] == 8:
+        black_low = h["cs"] in (CS_W, CS_SW)
+        v = 0
+        for p in line[:w]:
+            v = (v << 1) | (1 if (p < 128) == black_low else 0)
+        return v, w
+    raise ValueError("unsupported bits per pixel: %d" % h["bpp"])
+
+
+def page_to_esc(lines, h, rotate, right_mm, up_mm):
+    """right_mm / up_mm shift the image as the user sees the finished label."""
+    w = h["width"]
+    dx, dy = round(right_mm * DOTS_PER_MM), round(up_mm * DOTS_PER_MM)
+    rows = [to_bits(line, h)[0] for line in lines]
+    if rotate:
+        # 180 degrees: reverse row order and the dots within each row.
+        # The label's bottom now prints first and its left side lies at the head's right.
+        rows = [int(format(v, "0%db" % w)[::-1], 2) for v in reversed(rows)]
+        dx, lead = -dx, dy
+    else:
+        lead = -dy
+    offset = max(0, (HEAD_DOTS - w) // 2 + X_ADJUST_DOTS + dx)
+    # lead > 0 delays the image by blank rows; lead < 0 drops leading rows
+    rows = [0] * lead + rows if lead >= 0 else rows[-lead:]
+    out = bytearray()
+    for v in rows:
+        # place on the 640-dot head: shift right by offset, crop what falls off the head
+        shift = HEAD_DOTS - offset - w
+        v = v << shift if shift >= 0 else v >> -shift
+        v &= (1 << HEAD_DOTS) - 1
+        out += v.to_bytes(HEAD_BYTES, "big")
+    rows = len(out) // HEAD_BYTES
+    return (b"\x1b@\x1dv0\x00" + struct.pack("<HH", HEAD_BYTES, rows)
+            + bytes(out) + b"\x0c\x1b@")
+
+
+def ppd_lines():
+    try:
+        with open(os.environ["PPD"], encoding="latin-1") as ppd:
+            return ppd.readlines()
+    except (KeyError, OSError):
+        return []
+
+
+def ppd_default(keyword):
+    """Printer-wide default from the queue's PPD (lpadmin -o writes it there)."""
+    for line in ppd_lines():
+        if line.startswith("*Default%s:" % keyword):
+            return line.split(":", 1)[1].strip()
+    return None
+
+
+def label_shift(page_pt):
+    """(right_mm, up_mm) of the labels.conf entry matching this page size, else (0, 0)."""
+    best, best_d = (0.0, 0.0), 3.0          # tolerate rounding of the page size to points
+    for line in ppd_lines():
+        if not line.startswith("*NiimbotLabel "):
+            continue
+        try:
+            w, h, right, up = map(float, line.split('"')[1].split())
+        except (IndexError, ValueError):
+            continue
+        d = max(abs(w - page_pt[0]), abs(h - page_pt[1]))
+        if d < best_d:
+            best, best_d = (right, up), d
+    return best
+
+
+def mm_option(value):
+    """PPD choice like "m1.5" / "p1" / "0" -> millimetres."""
+    if not value:
+        return 0.0
+    sign = -1 if value[0] == "m" else 1
+    try:
+        return sign * float(value.lstrip("mp"))
+    except ValueError:
+        return 0.0
+
+
+def main():
+    f = open(sys.argv[6], "rb") if len(sys.argv) > 6 else sys.stdin.buffer
+    sync = f.read(4)
+    endian = {b"RaSt": ">", b"RaS2": ">", b"RaS3": ">",
+              b"tSaR": "<", b"2SaR": "<", b"3SaR": "<"}.get(sync)
+    if endian is None:
+        log("ERROR: not a CUPS raster stream")
+        return 1
+    compressed = sync in (b"RaS2", b"2SaR")
+    options = sys.argv[5].split() if len(sys.argv) > 5 else []
+    opt = {k: ppd_default(k) for k in ("Rotate180", "ShiftRight", "ShiftUp")}
+    for o in options:
+        k, _, v = o.partition("=")
+        if k in opt:
+            opt[k] = v
+    rotate = opt["Rotate180"] != "False"
+    right_mm, up_mm = mm_option(opt["ShiftRight"]), mm_option(opt["ShiftUp"])
+    out = sys.stdout.buffer
+    page = 0
+    while True:
+        try:
+            h = read_header(f, endian)
+        except EOFError:
+            break
+        page += 1
+        lr, lu = label_shift(h["page_pt"])
+        log("INFO: label %d (%dx%d dots), shift right %g mm, up %g mm"
+            % (page, h["width"], h["height"], lr + right_mm, lu + up_mm))
+        data = page_to_esc(read_lines(f, h, compressed), h, rotate,
+                           lr + right_mm, lu + up_mm)
+        out.write(data)
+        out.flush()
+        log("PAGE: %d 1" % page)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
