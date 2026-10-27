@@ -118,3 +118,9 @@ interface (`/dev/usb/lp*`):
 
 ESC/POS text commands and raw raster without `GS v 0` are ignored.
 80 mm head, 203 dpi; narrower labels sit centred on the head.
+
+---
+
+## Лицензия / License
+
+[MIT](LICENSE)
