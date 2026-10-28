@@ -30,7 +30,7 @@ HEADER = """*PPD-Adobe: "4.3"
 *TTRasterizer: Type42
 *cupsVersion: 2.4
 *cupsModelNumber: 0
-*cupsManualCopies: False
+*cupsManualCopies: True
 *cupsFilter: "application/vnd.cups-raster 0 rastertoniimbot"
 
 *OpenUI *Resolution/Resolution: PickOne
