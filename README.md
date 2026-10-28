@@ -31,6 +31,12 @@ sudo ./install.sh
 lp -d NIIMBOT_K3W test-43x25.pdf
 ```
 
+Для настройки сдвигов и зазора есть `test-frame-50x30.pdf` и `test-frame-43x25.pdf`:
+три этикетки с рамкой в 1 мм от края и номерами. Рамка должна лечь ровно по каждой этикетке:
+```sh
+lp -d NIIMBOT_K3W -o PageSize=w142h85 test-frame-50x30.pdf
+```
+
 ### Размеры и отступы
 Все этикетки описаны в `labels.conf`:
 ```
@@ -111,6 +117,12 @@ The printer must be connected via USB. A `NIIMBOT_K3W` queue is created.
 Test:
 ```sh
 lp -d NIIMBOT_K3W test-43x25.pdf
+```
+
+To tune shifts and the gap, `test-frame-50x30.pdf` and `test-frame-43x25.pdf` hold three
+numbered labels with a frame 1 mm inside the edge; it should sit evenly on every label:
+```sh
+lp -d NIIMBOT_K3W -o PageSize=w142h85 test-frame-50x30.pdf
 ```
 
 ### Sizes and offsets
