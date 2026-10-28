@@ -16,6 +16,20 @@ X_ADJUST_DOTS = 8          # +1 mm: test print was shifted ~1 mm left
 DOTS_PER_MM = 8
 CS_K = 3                   # cupsColorSpace values where 1/255 means black
 CS_W, CS_SW = 0, 18        # ... and where 0 means black
+INVERT = bytes(range(255, -1, -1))
+# Barcodes, QR codes and text are flat black (or dark grey) on white with sharp edges;
+# photos and gradients have mid-tones that change smoothly. Areas where more than
+# PHOTO_SHARE of the dots within PHOTO_R are smooth mid-tones seed a photo; it then
+# spreads over smoothly changing dots up to the sharp edges around it, taking in its
+# shadows and highlights. Photos get dithered, everything else a hard threshold
+# (dithering a barcode makes its bars ragged and speckled).
+MID_LO, MID_HI = 64, 224
+PAPER = 250                # lighter dots are blank paper; photos don't spread over it
+PHOTO_R = 3
+PHOTO_SHARE = 0.5
+EDGE_STEP = 64             # brightness change over 2 dots that marks an edge
+PHOTO_GROW = 2             # then take in the photo's own fine detail
+IS_MID = bytes(1 if MID_LO <= g < MID_HI else 0 for g in range(256))
 
 
 def log(msg):
@@ -68,28 +82,93 @@ def read_lines(f, h, compressed):
             y += 1
 
 
-def to_bits(line, h):
-    """Convert one raster line to an int whose set bits are black dots (MSB = leftmost)."""
+def page_bits(lines, h):
+    """Convert a page to ints whose set bits are black dots (MSB = leftmost)."""
     w = h["width"]
     if h["bpp"] == 1:
-        v = int.from_bytes(line, "big") >> (len(line) * 8 - w)
-        if h["cs"] in (CS_W, CS_SW):
-            v ^= (1 << w) - 1
-        return v, w
-    if h["bpp"] == 8:
-        black_low = h["cs"] in (CS_W, CS_SW)
+        full = (1 << w) - 1 if h["cs"] in (CS_W, CS_SW) else 0
+        return [(int.from_bytes(line, "big") >> (len(line) * 8 - w)) ^ full for line in lines]
+    if h["bpp"] != 8:
+        raise ValueError("unsupported bits per pixel: %d" % h["bpp"])
+    # grey levels with 0 = black
+    grey = [line[:w] if h["cs"] in (CS_W, CS_SW) else line[:w].translate(INVERT)
+            for line in lines]
+    photo = photo_mask(grey, w)
+    rows = []
+    err = [0] * (w + 2)            # Floyd-Steinberg error for the current row, x+1 indexed
+    for y, line in enumerate(grey):
+        nxt = [0] * (w + 2)
         v = 0
-        for p in line[:w]:
-            v = (v << 1) | (1 if (p < 128) == black_low else 0)
-        return v, w
-    raise ValueError("unsupported bits per pixel: %d" % h["bpp"])
+        for x, g in enumerate(line):
+            if photo[y][x]:
+                g += err[x + 1] >> 4
+                dot = g < 128
+                e = g if dot else g - 255
+                err[x + 2] += 7 * e
+                nxt[x] += 3 * e
+                nxt[x + 1] += 5 * e
+                nxt[x + 2] += e
+            else:
+                dot = g < 128
+            v = (v << 1) | dot
+        rows.append(v)
+        err = nxt
+    return rows
+
+
+def photo_mask(grey, w):
+    """Per dot: 1 inside photos and gradients."""
+    height = len(grey)
+    if not any(any(line.translate(IS_MID)) for line in grey):
+        return [bytes(w)] * height
+    # smooth[y][x]: 1 where brightness changes slowly; edges and blank paper are 0
+    smooth = []
+    for y, line in enumerate(grey):
+        up, down = grey[max(0, y - 1)], grey[min(height - 1, y + 1)]
+        row = bytearray(w)
+        for x, g in enumerate(line):
+            if g < PAPER:
+                dx = line[min(w - 1, x + 1)] - line[max(0, x - 1)]
+                row[x] = abs(dx) + abs(down[x] - up[x]) < EDGE_STEP
+        smooth.append(row)
+    seeds = [bytes(a & b for a, b in zip(line.translate(IS_MID), s))
+             for line, s in zip(grey, smooth)]
+    mask = [bytearray(r) for r in box_count(seeds, w, PHOTO_R, PHOTO_SHARE * (2 * PHOTO_R + 1) ** 2)]
+    # flood out from the seeds over smooth dots
+    todo = [(x, y) for y, r in enumerate(mask) for x in range(w) if r[x]]
+    while todo:
+        x, y = todo.pop()
+        for nx, ny in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)):
+            if 0 <= nx < w and 0 <= ny < height and smooth[ny][nx] and not mask[ny][nx]:
+                mask[ny][nx] = 1
+                todo.append((nx, ny))
+    return box_count(mask, w, PHOTO_GROW, 0)
+
+
+def box_count(marks, w, r, need):
+    """Per dot: 1 where more than `need` of the 0/1 marks in the (2r+1)^2 square around it are set."""
+    height = len(marks)
+    cols = [0] * w                  # marks per column within rows y-r..y+r
+    for m in marks[:r]:
+        cols = [c + d for c, d in zip(cols, m)]
+    out = []
+    for y in range(height):
+        if y + r < height:
+            cols = [c + d for c, d in zip(cols, marks[y + r])]
+        if y - r - 1 >= 0:
+            cols = [c - d for c, d in zip(cols, marks[y - r - 1])]
+        pre = [0]
+        for c in cols:
+            pre.append(pre[-1] + c)
+        out.append(bytes(pre[min(w, x + r + 1)] - pre[max(0, x - r)] > need for x in range(w)))
+    return out
 
 
 def page_to_esc(lines, h, rotate, right_mm, up_mm):
     """right_mm / up_mm shift the image as the user sees the finished label."""
     w = h["width"]
     dx, dy = round(right_mm * DOTS_PER_MM), round(up_mm * DOTS_PER_MM)
-    rows = [to_bits(line, h)[0] for line in lines]
+    rows = page_bits(lines, h)
     if rotate:
         # 180 degrees: reverse row order and the dots within each row.
         # The label's bottom now prints first and its left side lies at the head's right.

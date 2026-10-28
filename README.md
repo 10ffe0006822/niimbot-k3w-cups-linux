@@ -15,6 +15,7 @@
 - Отдельные отступы для каждого размера этикетки
 - Поворот на 180° (включён по умолчанию)
 - Разовая подстройка сдвига в окне печати
+- Чёткие штрих-коды, QR-коды и текст, при этом фото и градиенты передаются полутонами: драйвер сам различает эти участки на этикетке
 - Без зависимостей — только Python 3 и CUPS
 
 ### Установка
@@ -85,6 +86,7 @@ system printer and prints from any application.
 - Per-label-size print offsets
 - 180° rotation (on by default)
 - Per-job offset tweaks in the print dialog
+- Crisp barcodes, QR codes and text while photos and gradients keep their halftones: the driver tells these areas apart on each label
 - No dependencies beyond Python 3 and CUPS
 
 ### Install

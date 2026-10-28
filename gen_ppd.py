@@ -36,7 +36,7 @@ HEADER = """*PPD-Adobe: "4.3"
 *OpenUI *Resolution/Resolution: PickOne
 *OrderDependency: 10 AnySetup *Resolution
 *DefaultResolution: 203dpi
-*Resolution 203dpi/203 DPI: "<</HWResolution[203 203]/cupsBitsPerColor 1/cupsColorSpace 3/cupsColorOrder 0>>setpagedevice"
+*Resolution 203dpi/203 DPI: "<</HWResolution[203 203]/cupsBitsPerColor 8/cupsColorSpace 18/cupsColorOrder 0>>setpagedevice"
 *CloseUI: *Resolution
 
 *OpenUI *Rotate180/Rotate 180 degrees: Boolean
