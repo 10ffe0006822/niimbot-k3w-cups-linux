@@ -45,6 +45,17 @@ lp -d NIIMBOT_K3W test-43x25.pdf
 
 После изменений снова выполните `sudo ./install.sh`.
 
+### Несколько этикеток подряд
+Внутри одного задания принтер печатает страницы сплошной лентой и не замечает зазоры
+между этикетками. Поэтому настройка «Gap between labels» в окне печати предлагает два режима:
+- **Pause after each label** (по умолчанию) — пауза 2 с после каждой этикетки, принтер сам
+  находит начало следующей. Работает с любым рулоном, но печатает по одной этикетке;
+- **зазор в мм** (1–5 мм) — драйвер сам пропускает зазор, и всё задание печатается одним
+  проходом. Зазор должен точно совпадать с рулоном, иначе сдвиг накапливается с каждой этикеткой.
+
+Чтобы зазор стоял по умолчанию: `lpadmin -p NIIMBOT_K3W -o LabelGap=3`.
+При повороте на 180° страницы печатаются с последней, чтобы лента читалась сверху вниз.
+
 ### Ограничения
 - **Открытая крышка** — принтер сам ставит печать на паузу и продолжает, когда крышку закрыть.
 - **Кончилась лента** — принтер паузу не ставит: задания, отправленные без ленты,
@@ -106,6 +117,17 @@ lp -d NIIMBOT_K3W test-43x25.pdf
 All labels are listed in `labels.conf`: width (across the tape, max 80 mm),
 height (along the tape), shift right and shift up in mm as seen on the printed label.
 The first line is the default size. Run `sudo ./install.sh` again after editing.
+
+### Several labels in a row
+Within one job the printer prints pages back to back and ignores the gaps between labels.
+The "Gap between labels" print option offers two modes:
+- **Pause after each label** (default) — a 2 s pause after each label lets the printer find
+  the next one itself. Works with any roll, but prints one label at a time;
+- **gap in mm** (1–5 mm) — the driver skips the gap itself and the whole job prints in one go.
+  The gap must match the roll exactly, or the offset grows with every label.
+
+To make a gap the default: `lpadmin -p NIIMBOT_K3W -o LabelGap=3`.
+With 180° rotation pages print last-first, so the tape reads top to bottom.
 
 ### Limitations
 - **Cover open** — the printer pauses by itself and resumes once the cover is closed.

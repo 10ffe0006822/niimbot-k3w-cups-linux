@@ -92,6 +92,7 @@ def ppd(labels):
     lines.append("")
     lines += shift_option("ShiftRight", "Extra shift right (mm)", 31)
     lines += shift_option("ShiftUp", "Extra shift up (mm)", 32)
+    lines += gap_option(33)
     setpd = '"<</PageSize[%.2f %.2f]/ImagingBBox null>>setpagedevice"'
     default = labels[0][0]
     for kw, ui, value in (
@@ -122,6 +123,20 @@ def shift_option(keyword, title, order):
         name = "0" if i == 0 else ("p" if i > 0 else "m") + fmt(abs(mm))
         lines.append('*%s %s/%+.1f mm: ""' % (keyword, name, mm))
     lines += ["*CloseUI: *%s" % keyword, ""]
+    return lines
+
+
+def gap_option(order):
+    """Gap between labels: pause after each label (printer finds the next one itself),
+    or the gap in mm, 1..5 in 0.25 mm steps, to print a whole job in one go."""
+    lines = ["*OpenUI *LabelGap/Gap between labels: PickOne",
+             "*OrderDependency: %d AnySetup *LabelGap" % order,
+             "*DefaultLabelGap: Pause",
+             '*LabelGap Pause/Pause after each label: ""']
+    for i in range(4, 21):
+        mm = fmt(i / 4)
+        lines.append('*LabelGap %s/%s mm: ""' % (mm, mm))
+    lines += ["*CloseUI: *LabelGap", ""]
     return lines
 
 

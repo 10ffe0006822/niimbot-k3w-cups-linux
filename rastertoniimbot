@@ -9,11 +9,17 @@
 import os
 import struct
 import sys
+import time
 
 HEAD_DOTS = 640
 HEAD_BYTES = HEAD_DOTS // 8
 X_ADJUST_DOTS = 8          # +1 mm: test print was shifted ~1 mm left
 DOTS_PER_MM = 8
+# Within one stream the printer prints pages back to back and ignores the label gaps
+# (FF and GS FF don't help); it only moves to the next label once it runs out of data.
+# So each further page either waits PAGE_PAUSE seconds, or, with the LabelGap option
+# set, follows the previous page after blank rows that cover the gap.
+PAGE_PAUSE = 2.0
 CS_K = 3                   # cupsColorSpace values where 1/255 means black
 CS_W, CS_SW = 0, 18        # ... and where 0 means black
 INVERT = bytes(range(255, -1, -1))
@@ -164,8 +170,9 @@ def box_count(marks, w, r, need):
     return out
 
 
-def page_to_esc(lines, h, rotate, right_mm, up_mm):
-    """right_mm / up_mm shift the image as the user sees the finished label."""
+def page_rows(lines, h, rotate, right_mm, up_mm):
+    """Rows of the label as placed on the head (ints, HEAD_DOTS wide).
+    right_mm / up_mm shift the image as the user sees the finished label."""
     w = h["width"]
     dx, dy = round(right_mm * DOTS_PER_MM), round(up_mm * DOTS_PER_MM)
     rows = page_bits(lines, h)
@@ -179,16 +186,16 @@ def page_to_esc(lines, h, rotate, right_mm, up_mm):
     offset = max(0, (HEAD_DOTS - w) // 2 + X_ADJUST_DOTS + dx)
     # lead > 0 delays the image by blank rows; lead < 0 drops leading rows
     rows = [0] * lead + rows if lead >= 0 else rows[-lead:]
-    out = bytearray()
-    for v in rows:
-        # place on the 640-dot head: shift right by offset, crop what falls off the head
-        shift = HEAD_DOTS - offset - w
-        v = v << shift if shift >= 0 else v >> -shift
-        v &= (1 << HEAD_DOTS) - 1
-        out += v.to_bytes(HEAD_BYTES, "big")
-    rows = len(out) // HEAD_BYTES
-    return (b"\x1b@\x1dv0\x00" + struct.pack("<HH", HEAD_BYTES, rows)
-            + bytes(out) + b"\x0c\x1b@")
+    # place on the 640-dot head: shift right by offset, crop what falls off the head
+    shift = HEAD_DOTS - offset - w
+    full = (1 << HEAD_DOTS) - 1
+    return [(v << shift if shift >= 0 else v >> -shift) & full for v in rows]
+
+
+def to_esc(rows):
+    out = b"".join(v.to_bytes(HEAD_BYTES, "big") for v in rows)
+    return (b"\x1b@\x1dv0\x00" + struct.pack("<HH", HEAD_BYTES, len(rows))
+            + out + b"\x0c\x1b@")
 
 
 def ppd_lines():
@@ -244,29 +251,54 @@ def main():
         return 1
     compressed = sync in (b"RaS2", b"2SaR")
     options = sys.argv[5].split() if len(sys.argv) > 5 else []
-    opt = {k: ppd_default(k) for k in ("Rotate180", "ShiftRight", "ShiftUp")}
+    opt = {k: ppd_default(k) for k in ("Rotate180", "ShiftRight", "ShiftUp", "LabelGap")}
     for o in options:
         k, _, v = o.partition("=")
         if k in opt:
             opt[k] = v
     rotate = opt["Rotate180"] != "False"
     right_mm, up_mm = mm_option(opt["ShiftRight"]), mm_option(opt["ShiftUp"])
+    gap = mm_option(opt["LabelGap"]) if opt["LabelGap"] not in (None, "Pause") else None
     out = sys.stdout.buffer
-    page = 0
-    while True:
-        try:
-            h = read_header(f, endian)
-        except EOFError:
-            break
-        page += 1
-        lr, lu = label_shift(h["page_pt"])
-        log("INFO: label %d (%dx%d dots), shift right %g mm, up %g mm"
-            % (page, h["width"], h["height"], lr + right_mm, lu + up_mm))
-        data = page_to_esc(read_lines(f, h, compressed), h, rotate,
-                           lr + right_mm, lu + up_mm)
+    sent = [0, 0.0]                 # pages sent, time of the last one
+
+    def send(data):
+        if sent[0] and gap is None:
+            time.sleep(max(0.0, PAGE_PAUSE - (time.monotonic() - sent[1])))
         out.write(data)
         out.flush()
-        log("PAGE: %d 1" % page)
+        sent[0] += 1
+        sent[1] = time.monotonic()
+        log("PAGE: %d 1" % sent[0])
+
+    def pages():
+        """(rows, label height in rows) per page, in input order."""
+        page = 0
+        while True:
+            try:
+                h = read_header(f, endian)
+            except EOFError:
+                return
+            page += 1
+            lr, lu = label_shift(h["page_pt"])
+            log("INFO: label %d (%dx%d dots), shift right %g mm, up %g mm"
+                % (page, h["width"], h["height"], lr + right_mm, lu + up_mm))
+            yield (page_rows(read_lines(f, h, compressed), h, rotate,
+                             lr + right_mm, lu + up_mm), h["height"])
+
+    # the whole tape is turned around, so with rotation the last page goes out first
+    order = reversed(list(pages())) if rotate else pages()
+    prev = None
+    for cur in order:
+        if prev:
+            rows, height = prev
+            if gap is not None:
+                # blank rows up to the next label: label height + gap, whatever the shift did
+                rows = rows + [0] * max(0, height + round(gap * DOTS_PER_MM) - len(rows))
+            send(to_esc(rows))
+        prev = cur
+    if prev:
+        send(to_esc(prev[0]))
     return 0
 
 
